@@ -1,0 +1,82 @@
+name: collect
+
+# 毎時ジョブ（台風・警報・アメダススナップ）と日次ジョブ（アメダス日値サマリ）。
+# 消費は 24回/日 + 1回/日 = 約775分/月（private リポの無料枠 2,000分/月に対し約39%）。
+# 注意: スケジュール実行はデフォルトブランチのワークフローしか動かない。
+on:
+  schedule:
+    - cron: '50 * * * *'   # JST 毎時 :50
+    - cron: '10 15 * * *'  # JST 00:10 → 前日分の日値サマリを確定値で取る
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 収集モード
+        type: choice
+        options: [hourly, daily]
+        default: hourly
+
+permissions:
+  contents: write
+
+# 毎時と日次が重なっても push が競合しないよう直列化する
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: モードを決める
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "${{ github.event.schedule }}" = "10 15 * * *" ]; then
+              echo "mode=daily" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=hourly" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 取得失敗しても欠測レコードは JSONL に書かれている。まずコミットしてから落とす。
+      - name: 収集
+        id: collect
+        continue-on-error: true
+        run: node scripts/collect.mjs ${{ steps.mode.outputs.mode }}
+
+      - name: コミットして push
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # daily が初回実行のときは state/ がまだ無いことがあるので個別に足す
+          git add -A data || true
+          git add -A state || true
+          if git diff --cached --quiet; then
+            echo "追記なし（警報・台風に変化がなければ通常のこと）"
+            exit 0
+          fi
+          STAMP=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
+          git commit -m "data: ${{ steps.mode.outputs.mode }} collect ${STAMP} [skip ci]"
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push 競合。rebase して再試行 (${attempt}/3)"
+            git pull --rebase --autostash
+          done
+          echo "3回試しても push できなかった" >&2
+          exit 1
+
+      - name: 取得失敗があったのでジョブを失敗させる
+        if: steps.collect.outcome == 'failure'
+        run: |
+          echo "取得に失敗したソースがあります。欠測レコードは記録済みです。" >&2
+          echo "ログの「取得に失敗しました」の行を確認してください。" >&2
+          exit 1

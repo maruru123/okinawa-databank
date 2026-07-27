@@ -1,0 +1,3 @@
+# 追記は Linux ランナー(LF)、手元は Windows。改行が混ざると JSONL が壊れるので
+# 作業ツリーも含めて LF に固定する。
+* text=auto eol=lf
