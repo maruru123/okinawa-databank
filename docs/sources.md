@@ -10,15 +10,17 @@
 [政府標準利用規約（第2.0版）](https://www.jma.go.jp/jma/kishou/info/coment.html) に準拠し、
 出典を明記すれば二次利用できる（商用利用を含む）。規約リスクなし。
 
-| # | データ | エンドポイント | 頻度 | 保存先 |
-|---|---|---|---|---|
-| 1 | 現存台風の一覧 | `https://www.jma.go.jp/bosai/typhoon/data/targetTc.json` | 毎時 | `data/typhoon/` |
-| 2 | 台風の諸元（実況＋120時間先までの予報） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/specifications.json` | 毎時（発表更新時のみ記録） | `data/typhoon/` |
-| 3 | 台風の図形（予報円・暴風警戒域） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/forecast.json` | 毎時（発表更新時のみ記録） | `data/typhoon/` |
-| 4 | 気象警報・注意報（沖縄4区） | `https://www.jma.go.jp/bosai/warning/data/warning/{471000,472000,473000,474000}.json` | 毎時（発表更新時のみ記録） | `data/warning/` |
-| 5 | アメダス最新観測時刻 | `https://www.jma.go.jp/bosai/amedas/data/latest_time.txt` | 毎時 | （#6 のURL組み立てに使うだけ） |
-| 6 | アメダス実況（沖縄34地点） | `https://www.jma.go.jp/bosai/amedas/data/map/{yyyyMMddHHmmss}.json` | 毎時 | `data/amedas/` |
-| 7 | アメダス日値（官署8地点） | `https://www.jma.go.jp/bosai/amedas/data/point/{id}/{yyyyMMdd}_21.json` | 日次 | `data/amedas_daily/` |
+| # | 層 | データ | エンドポイント | 頻度 | 保存先 |
+|---|---|---|---|---|---|
+| 1 | 2 | 現存台風の一覧 | `https://www.jma.go.jp/bosai/typhoon/data/targetTc.json` | 30分 | `data/typhoon/` |
+| 2 | 2 | 台風の諸元（実況＋120時間先までの予報） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/specifications.json` | 30分（発表更新時のみ記録） | `data/typhoon/` |
+| 3 | 2 | 台風の図形（予報円・暴風警戒域） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/forecast.json` | 30分（発表更新時のみ記録） | `data/typhoon/` |
+| 4 | 2 | 気象警報・注意報（沖縄4区） | `https://www.jma.go.jp/bosai/warning/data/warning/{471000,472000,473000,474000}.json` | 30分（発表更新時のみ記録） | `data/warning/` |
+| 5 | 1 | アメダス面（沖縄34地点・前日23:50） | `https://www.jma.go.jp/bosai/amedas/data/map/{yyyyMMdd}235000.json` | 日次 | `data/amedas/` |
+| 6 | 1 | アメダス日値（官署8地点） | `https://www.jma.go.jp/bosai/amedas/data/point/{id}/{yyyyMMdd}_21.json` | 日次 | `data/amedas_daily/` |
+
+層の意味は [README.md](../README.md) の冒頭を参照。**層2は取り直せないので頻度で守り、
+層1は気象庁が遡及配信しているので日次で足りる**、という切り分けになっている。
 
 ### 参照用の定数ファイル（収集対象ではない）
 
@@ -41,6 +43,16 @@
   対応表は [README.md](../README.md) に手書きで持つ。
 - 台風の詳細ファイルは `specifications.json` と `forecast.json` の2本だけ。
   `detail.json` / `overview.json` / `track.json` は存在しない（404 実測済み）。
+- **過去の発表を取得する手段がない。** 台風は「現在の発表」1本しか配信されず、
+  過去の `issue` を遡るエンドポイントは存在しない。取り逃がした予報は永久欠損になる。
+  これが30分間隔でポーリングしている理由（層2）。
+- **重複排除は `issue` / `reportDatetime` で行っているので、ポーリング頻度を上げても
+  保存量は増えない。** 増えるのは Actions の実行分数だけ。
+- **アメダスの遡及可能期間は約8日**（2026-07-27 実測: 07-19 は 200、07-18 は 404）。
+  `map/` も `point/` も同じ窓。日次ジョブが8日を超えて止まると層1も欠損する。
+- 台風の定時発表は3時間ごと（00/03/…/21時JSTの実況を約45分後に配信）。
+  日本近海に接近すると毎時発表に切り替わるが、M1実測時の台風は
+  マーシャル諸島付近で遠く、**毎時サイクルは未観測**。既知の最速間隔は1時間。
 
 ## 見送ったソース
 

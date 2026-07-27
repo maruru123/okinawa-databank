@@ -259,108 +259,69 @@ async function collectTyphoons(state) {
   console.log(`typhoon: 現存 ${targets.length} 個 / ${appended} 件追記`);
 }
 
-// ---------------------------------------------------------------- 収集: アメダス毎時
+// ---------------------------------------------------------------- 収集: アメダス面スナップ
 
-// 全国スナップは 250KB あるが、沖縄34地点だけ抜くと約6KB に収まる。
-// latest_time.txt が指す時刻のファイルがまだ無いことがあるので、その場合は10分戻す。
-async function collectAmedasSnapshot() {
-  const parts = jstDateParts(Date.now());
-  const timeUrl = `${BASE}/amedas/data/latest_time.txt`;
+// 前日23:50の全国スナップから沖縄34地点だけ抜く（全国250KB → 沖縄約6KB）。
+// latest_time.txt は使わない。対象時刻を日付から直接組み立てるので、
+// cron が遅れても取る中身が変わらない。過去分は約8日間は取得できる（M1実測）。
+async function collectAmedasMap(parts) {
+  const mapUrl = `${BASE}/amedas/data/map/${parts.date}235000.json`;
+  const observedAt = `${parts.iso}T23:50:00+09:00`;
 
-  const res = await fetchJma(timeUrl);
-  if (res.error || res.status === 404 || !res.text) {
+  const res = await fetchJma(mapUrl);
+  if (res.error || res.status === 404) {
     const message = res.error || 'HTTP 404 Not Found';
-    await appendRecord('amedas', parts, {
-      fetched_at: jstIso(Date.now()),
-      source: SOURCE,
-      source_url: timeUrl,
-      dataset: 'amedas',
-      error: message,
-    });
-    failures.push(`amedas ${timeUrl}: ${message}`);
-    return;
-  }
-
-  const observedAt = res.text.trim();
-  const observedMs = Date.parse(observedAt);
-  if (Number.isNaN(observedMs)) {
-    await appendRecord('amedas', parts, {
-      fetched_at: jstIso(Date.now()),
-      source: SOURCE,
-      source_url: timeUrl,
-      dataset: 'amedas',
-      error: `latest_time.txt を時刻として解釈できない: ${JSON.stringify(observedAt.slice(0, 64))}`,
-    });
-    failures.push(`amedas ${timeUrl}: 時刻の解釈に失敗`);
-    return;
-  }
-
-  for (const backOffMinutes of [0, 10]) {
-    const ms = observedMs - backOffMinutes * 60_000;
-    const d = toJstClock(ms);
-    const stamp =
-      `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}` +
-      `${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}00`;
-    const mapUrl = `${BASE}/amedas/data/map/${stamp}.json`;
-
-    const probe = await fetchJma(mapUrl);
-    if (probe.status === 404 && backOffMinutes === 0) continue; // 生成待ちとみなして10分戻す
-
-    if (probe.error || probe.status === 404) {
-      const message = probe.error || 'HTTP 404 Not Found';
-      await appendRecord('amedas', parts, {
-        fetched_at: jstIso(Date.now()),
-        source: SOURCE,
-        source_url: mapUrl,
-        dataset: 'amedas',
-        error: message,
-      });
-      failures.push(`amedas ${mapUrl}: ${message}`);
-      return;
-    }
-
-    let all;
-    try {
-      all = JSON.parse(probe.text);
-    } catch (err) {
-      await appendRecord('amedas', parts, {
-        fetched_at: jstIso(Date.now()),
-        source: SOURCE,
-        source_url: mapUrl,
-        dataset: 'amedas',
-        error: `JSON parse failed: ${err.message}`,
-      });
-      failures.push(`amedas ${mapUrl}: JSON parse failed`);
-      return;
-    }
-
-    const stations = {};
-    for (const [id, value] of Object.entries(all)) {
-      if (OKINAWA_STATION_RE.test(id)) stations[id] = value;
-    }
-
     await appendRecord('amedas', parts, {
       fetched_at: jstIso(Date.now()),
       source: SOURCE,
       source_url: mapUrl,
       dataset: 'amedas',
-      observed_at: jstIso(ms),
-      station_count: Object.keys(stations).length,
-      stations,
+      date: parts.iso,
+      error: message,
     });
-    console.log(`amedas: ${Object.keys(stations).length} 地点 @ ${jstIso(ms)}`);
+    failures.push(`amedas ${mapUrl}: ${message}`);
     return;
   }
+
+  let all;
+  try {
+    all = JSON.parse(res.text);
+  } catch (err) {
+    await appendRecord('amedas', parts, {
+      fetched_at: jstIso(Date.now()),
+      source: SOURCE,
+      source_url: mapUrl,
+      dataset: 'amedas',
+      date: parts.iso,
+      error: `JSON parse failed: ${err.message}`,
+    });
+    failures.push(`amedas ${mapUrl}: JSON parse failed`);
+    return;
+  }
+
+  const stations = {};
+  for (const [id, value] of Object.entries(all)) {
+    if (OKINAWA_STATION_RE.test(id)) stations[id] = value;
+  }
+
+  await appendRecord('amedas', parts, {
+    fetched_at: jstIso(Date.now()),
+    source: SOURCE,
+    source_url: mapUrl,
+    dataset: 'amedas',
+    date: parts.iso,
+    observed_at: observedAt,
+    station_count: Object.keys(stations).length,
+    stations,
+  });
+  console.log(`amedas: ${Object.keys(stations).length} 地点 @ ${observedAt}`);
 }
 
 // ---------------------------------------------------------------- 収集: アメダス日値
 
-// 対象は「JST の前日」に固定する。cron が多少遅延しても対象日がずれない。
 // 21時ブロック（21:00〜23:50 の10分値18本）の最終レコードに、その日の
 // 最高/最低気温（時刻付き）・最大瞬間風速・24時間降水量が入っている。
-async function collectAmedasDaily() {
-  const targetMs = Date.now() - 24 * 60 * 60 * 1000;
-  const parts = jstDateParts(targetMs);
+async function collectAmedasDaily(parts) {
   let appended = 0;
 
   for (const [station, name] of DAILY_STATIONS) {
@@ -406,23 +367,28 @@ async function collectAmedasDaily() {
 
 // ---------------------------------------------------------------- main
 
+// watch = 「その時点の予報」を取りこぼさないための監視（30分ごと）。
+//         台風の予報と警報の発表/解除は事後に取り直せないので、これが本体。
+// daily = 実績（気象庁が約8日間は遡及配信している）。1日1回で足りる。
 async function main() {
   const mode = process.argv[2];
-  if (mode !== 'hourly' && mode !== 'daily') {
-    console.error('使い方: node scripts/collect.mjs <hourly|daily>');
+  if (mode !== 'watch' && mode !== 'daily') {
+    console.error('使い方: node scripts/collect.mjs <watch|daily>');
     process.exit(2);
   }
 
   console.log(`[${jstIso(Date.now())}] mode=${mode}`);
 
-  if (mode === 'hourly') {
+  if (mode === 'watch') {
     const state = await readState();
     await collectTyphoons(state);
     await collectWarnings(state);
-    await collectAmedasSnapshot();
     await writeState(state);
   } else {
-    await collectAmedasDaily();
+    // 対象は「JSTの前日」に固定。cron が多少遅延しても対象日がずれない。
+    const parts = jstDateParts(Date.now() - 24 * 60 * 60 * 1000);
+    await collectAmedasDaily(parts);
+    await collectAmedasMap(parts);
   }
 
   if (failures.length > 0) {

@@ -1,3 +1,8 @@
 # 追記は Linux ランナー(LF)、手元は Windows。改行が混ざると JSONL が壊れるので
 # 作業ツリーも含めて LF に固定する。
 * text=auto eol=lf
+
+# JSONL は追記専用。2箇所から追記すると必ず末尾で衝突するが、正解は常に
+# 「両方残す」なので union にする。これがないと Actions の push リトライ
+# (git pull --rebase) が衝突で止まり、収集済みデータがコミットされないまま落ちる。
+*.jsonl merge=union

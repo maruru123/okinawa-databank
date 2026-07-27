@@ -1,19 +1,22 @@
 name: collect
 
-# 毎時ジョブ（台風・警報・アメダススナップ）と日次ジョブ（アメダス日値サマリ）。
-# 消費は 24回/日 + 1回/日 = 約775分/月（private リポの無料枠 2,000分/月に対し約39%）。
+# watch = 台風の予報・警報の発表/解除。事後に取り直せないので30分ごとに見張る。
+#         気象庁の最速発表間隔は1時間なので、30分間隔なら cron が1回飛んでも拾える。
+#         重複排除は issue / reportDatetime で行うため、頻度を上げても保存量は増えない。
+# daily = アメダスの実績。気象庁が約8日間は遡及配信しているので1日1回で足りる。
+# 消費は 48回/日 + 1回/日 = 約1,519分/月（private リポの無料枠 2,000分/月に対し約76%）。
 # 注意: スケジュール実行はデフォルトブランチのワークフローしか動かない。
 on:
   schedule:
-    - cron: '50 * * * *'   # JST 毎時 :50
-    - cron: '10 15 * * *'  # JST 00:10 → 前日分の日値サマリを確定値で取る
+    - cron: '20,50 * * * *'  # JST 毎時 :20 と :50（台風の定時発表は :45 前後）
+    - cron: '10 15 * * *'    # JST 00:10 → 前日分の実績を確定値で取る
   workflow_dispatch:
     inputs:
       mode:
         description: 収集モード
         type: choice
-        options: [hourly, daily]
-        default: hourly
+        options: [watch, daily]
+        default: watch
 
 permissions:
   contents: write
@@ -40,7 +43,7 @@ jobs:
             if [ "${{ github.event.schedule }}" = "10 15 * * *" ]; then
               echo "mode=daily" >> "$GITHUB_OUTPUT"
             else
-              echo "mode=hourly" >> "$GITHUB_OUTPUT"
+              echo "mode=watch" >> "$GITHUB_OUTPUT"
             fi
           else
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
@@ -64,7 +67,9 @@ jobs:
             echo "追記なし（警報・台風に変化がなければ通常のこと）"
             exit 0
           fi
-          STAMP=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
+          # TZ=Asia/Tokyo に頼らない（tzdata の有無で静かに UTC に落ちる環境がある）。
+          # データ側と同じ「UTC+9時間して getUTC* で読む」方式で揃える。
+          STAMP=$(node -e "const d=new Date(Date.now()+9*36e5),p=n=>String(n).padStart(2,'0');console.log(d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+' JST')")
           git commit -m "data: ${{ steps.mode.outputs.mode }} collect ${STAMP} [skip ci]"
           for attempt in 1 2 3; do
             if git push; then exit 0; fi
