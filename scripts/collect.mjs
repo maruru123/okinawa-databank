@@ -2,10 +2,10 @@
 // 沖縄トラベル実績DB ― 気象庁データ収集スクリプト
 //
 // 使い方:
-//   node scripts/collect.mjs hourly   台風・警報・アメダス毎時スナップ
-//   node scripts/collect.mjs daily    前日(JST)のアメダス日値サマリ
+//   node scripts/collect.mjs watch    台風・警報（15分ごと。取り逃がすと復元不可）
+//   node scripts/collect.mjs daily    前日(JST)のアメダス実績
 //
-// 設計上の約束（HANDOFF.md より）:
+// 設計上の約束（詳細は README.md / docs/sources.md）:
 //   - 追記専用。過去レコードの書き換え・削除はしない
 //   - 全レコードが fetched_at(JST) と source_url を持つ
 //   - 取得失敗も同じ JSONL に error レコードとして記録し、プロセスは exit 1 で終わる

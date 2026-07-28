@@ -12,10 +12,10 @@
 
 | # | 層 | データ | エンドポイント | 頻度 | 保存先 |
 |---|---|---|---|---|---|
-| 1 | 2 | 現存台風の一覧 | `https://www.jma.go.jp/bosai/typhoon/data/targetTc.json` | 30分 | `data/typhoon/` |
-| 2 | 2 | 台風の諸元（実況＋120時間先までの予報） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/specifications.json` | 30分（発表更新時のみ記録） | `data/typhoon/` |
-| 3 | 2 | 台風の図形（予報円・暴風警戒域） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/forecast.json` | 30分（発表更新時のみ記録） | `data/typhoon/` |
-| 4 | 2 | 気象警報・注意報（沖縄4区） | `https://www.jma.go.jp/bosai/warning/data/warning/{471000,472000,473000,474000}.json` | 30分（発表更新時のみ記録） | `data/warning/` |
+| 1 | 2 | 現存台風の一覧 | `https://www.jma.go.jp/bosai/typhoon/data/targetTc.json` | 15分 | `data/typhoon/` |
+| 2 | 2 | 台風の諸元（実況＋120時間先までの予報） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/specifications.json` | 15分（発表更新時のみ記録） | `data/typhoon/` |
+| 3 | 2 | 台風の図形（予報円・暴風警戒域） | `https://www.jma.go.jp/bosai/typhoon/data/{tc}/forecast.json` | 15分（発表更新時のみ記録） | `data/typhoon/` |
+| 4 | 2 | 気象警報・注意報（沖縄4区） | `https://www.jma.go.jp/bosai/warning/data/warning/{471000,472000,473000,474000}.json` | 15分（発表更新時のみ記録） | `data/warning/` |
 | 5 | 1 | アメダス面（沖縄34地点・前日23:50） | `https://www.jma.go.jp/bosai/amedas/data/map/{yyyyMMdd}235000.json` | 日次 | `data/amedas/` |
 | 6 | 1 | アメダス日値（官署8地点） | `https://www.jma.go.jp/bosai/amedas/data/point/{id}/{yyyyMMdd}_21.json` | 日次 | `data/amedas_daily/` |
 
@@ -45,7 +45,7 @@
   `detail.json` / `overview.json` / `track.json` は存在しない（404 実測済み）。
 - **過去の発表を取得する手段がない。** 台風は「現在の発表」1本しか配信されず、
   過去の `issue` を遡るエンドポイントは存在しない。取り逃がした予報は永久欠損になる。
-  これが30分間隔でポーリングしている理由（層2）。
+  これが15分間隔でポーリングしている理由（層2）。
 - **重複排除は `issue` / `reportDatetime` で行っているので、ポーリング頻度を上げても
   保存量は増えない。** 増えるのは Actions の実行分数だけ。
 - **アメダスの遡及可能期間は約8日**（2026-07-27 実測: 07-19 は 200、07-18 は 404）。
