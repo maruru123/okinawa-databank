@@ -14,12 +14,20 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = join(ROOT, 'data');
 const STATE_FILE = join(ROOT, 'state', 'last_seen.json');
 const SOURCE = '気象庁';
 const BASE = 'https://www.jma.go.jp/bosai';
+
+// 警報系が7日以上更新されなければ異常とみなす（2026-08-01実測: 旧warningエンドポイントが
+// 2026-05-28で全国的に凍結し66日間気づけなかった教訓。r8移行後もソースがまた
+// 止まる可能性は消えないので、閾値超過を検知として残す）
+const STALE_WARNING_DAYS = 7;
+// 活動中の台風は最長でも3時間ごとに定時発表がある。24時間更新が無ければ異常
+const STALE_TYPHOON_DAYS = 1;
 
 // 沖縄県の府県予報区（area.json の offices を M1 で実測して確定）
 const WARNING_OFFICES = [
@@ -157,41 +165,91 @@ async function fetchJson(url, dataset, parts, { etag, extra = {} } = {}) {
   }
 }
 
+/**
+ * 「HTTPは200・JSONも壊れていないが、中身がずっと同じ」という壊れ方は
+ * ステータスコードやパース可否では検知できない（2026-08-01実測: 旧warning
+ * エンドポイントがこれで66日間気づかれなかった）。発表時刻が閾値より古ければ
+ * failures に積んでジョブを失敗させ、唯一の監視である失敗通知メールを鳴らす。
+ */
+function checkStale(dataset, label, referenceIso, nowMs, thresholdDays) {
+  if (!referenceIso) return;
+  const ageDays = (nowMs - Date.parse(referenceIso)) / 86_400_000;
+  if (ageDays > thresholdDays) {
+    const message =
+      `最新の発表(${referenceIso})から${ageDays.toFixed(1)}日経過(閾値${thresholdDays}日)。` +
+      `ソース側が更新を止めている可能性`;
+    failures.push(`${dataset} ${label}: ${message}`);
+  }
+}
+
+// reportDatetime は一意キーにならない（2026-08-01 実測: 宮古島地方で同時刻に
+// 別種の注意報解除が2件同時発表された）。中身のハッシュを足して区別する。
+function reportKey(report) {
+  const digest = createHash('sha1').update(JSON.stringify(report.warning ?? {})).digest('hex').slice(0, 8);
+  return `${report.reportDatetime}#${digest}`;
+}
+
 // ---------------------------------------------------------------- 収集: 警報・注意報
 
-// 警報 JSON は「発表内容に変化があったときだけ」更新される。M1 実測では沖縄4区とも
-// 2ヶ月前の Last-Modified のままだった。更新がない＝異常ではないので、
-// reportDatetime が前回と同じならレコードを作らない（ETag による 304 も同義）。
+// 2026-05-29 の「令和8年体系」移行で警報コードが刷新され、エンドポイントも
+// warning/data/warning/{code}.json → warning/data/r8/{code}.json に切り替わった
+// （2026-08-01 実測。旧URLは廃止されず200を返し続けるが中身は5/28で凍結したまま、
+// というのが今回66日間気づけなかった原因）。新URLはオブジェクト単発ではなく、
+// 直近の発表を複数まとめた配列を返す。そのため重複排除は「最新のreportDatetime」
+// 1個の比較ではなく、既知集合との差分に変える。
+//
+// 旧→新のフィールド対応（README参照）: areaTypes[0/1].areas[].code/warnings
+//   → warning.class10Items/class20Items[].areaCode/kinds
 async function collectWarnings(state) {
   const parts = jstDateParts(Date.now());
+  const nowMs = Date.now();
   state.warning ??= {};
   let appended = 0;
 
   for (const [code, name] of WARNING_OFFICES) {
-    const url = `${BASE}/warning/data/warning/${code}.json`;
+    const url = `${BASE}/warning/data/r8/${code}.json`;
     const prev = state.warning[code] || {};
     const res = await fetchJson(url, 'warning', parts, {
       etag: prev.etag,
       extra: { office: code, office_name: name },
     });
     if (!res) continue;
-    if (res.notModified) continue;
 
-    const reportDatetime = res.data.reportDatetime ?? null;
-    state.warning[code] = { etag: res.etag, report_datetime: reportDatetime };
-    if (reportDatetime && reportDatetime === prev.report_datetime) continue;
+    if (res.notModified) {
+      checkStale('warning', `${name}(${code})`, prev.latest_report_datetime, nowMs, STALE_WARNING_DAYS);
+      continue;
+    }
 
-    await appendRecord('warning', parts, {
-      fetched_at: jstIso(Date.now()),
-      source: SOURCE,
-      source_url: url,
-      dataset: 'warning',
-      office: code,
-      office_name: name,
-      report_datetime: reportDatetime,
-      data: res.data,
-    });
-    appended++;
+    const reports = Array.isArray(res.data) ? res.data : [];
+    const seenBefore = new Set(prev.seen_report_keys || []);
+    let latestReportDatetime = prev.latest_report_datetime ?? null;
+
+    for (const report of reports) {
+      if (!report.reportDatetime) continue;
+      const key = reportKey(report);
+      if (seenBefore.has(key)) continue;
+      seenBefore.add(key);
+
+      await appendRecord('warning', parts, {
+        fetched_at: jstIso(Date.now()),
+        source: SOURCE,
+        source_url: url,
+        dataset: 'warning',
+        office: code,
+        office_name: name,
+        warning_code_system: 'r8',
+        report_datetime: report.reportDatetime,
+        data: report,
+      });
+      appended++;
+      if (!latestReportDatetime || report.reportDatetime > latestReportDatetime) {
+        latestReportDatetime = report.reportDatetime;
+      }
+    }
+
+    const seenList = [...seenBefore].sort().slice(-100); // 無限に増やさない
+    state.warning[code] = { etag: res.etag, seen_report_keys: seenList, latest_report_datetime: latestReportDatetime };
+    checkStale('warning', `${name}(${code})`, latestReportDatetime, nowMs, STALE_WARNING_DAYS);
   }
   console.log(`warning: ${appended} 件追記`);
 }
@@ -225,7 +283,10 @@ async function collectTyphoons(state) {
     seen.add(tc);
 
     const issue = target.issue ?? null;
-    if (issue && state.typhoon[tc]?.issue === issue) continue;
+    if (issue && state.typhoon[tc]?.issue === issue) {
+      checkStale('typhoon', tc, issue, Date.now(), STALE_TYPHOON_DAYS);
+      continue;
+    }
 
     const specUrl = `${BASE}/typhoon/data/${tc}/specifications.json`;
     const fcUrl = `${BASE}/typhoon/data/${tc}/forecast.json`;
